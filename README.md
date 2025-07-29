@@ -105,11 +105,11 @@ ASEG_STRUCTURES = [ ( 5,  4, 'Left-Inf-Lat-Vent'),
                     (44,  4, 'Right-Inf-Lat-Vent'),
                     (57,  5, 'Right-Lesion'),
                     (62,  4, 'Right-vessel'),
-                    (72,  4, '5th-Ventricle'),
+                    (72,  4, '5th-Ventricle')
+                    (77,  5, ‘WM-Hypointensities’)
                     (250, 3, 'Fornix') ]
 ```
 
-These entries (labels 25 & 57) map WMH to tissue 5; stock MRtrix does not distinguish WMH.
 
 Make sure `${MRTRIX3_HOME}/bin` is first in `PATH` when you call `det_trac.sh`.
 
