@@ -1,0 +1,452 @@
+#!/bin/bash
+usage() {
+  echo -e "\n\033[38;5;93mScript to fix poor T2 -> T1 coregistration failures and/or brain extraction issues in the HCP pre-freesurfer pipeline."
+  echo -e "\n\033[38;5;93mEssentually redoes the whole HCP prefreesurfer script assuming a phase, magnitude, T2w and T1w images are present\033[0m"
+  echo -e "\n\033[38;5;93mAlso outputs sagittal, axial, and coronal T2 brain overlays on T1 head for rapid registration QC. Requires gradunwarp installed to \033[0m"
+  echo -e "\n\033[38;5;93mthe scripts directory. https://github.com/Washington-University/HCPpipelines/blob/master/global/scripts/GradientDistortionUnwarp.sh \033[0m"
+  echo -e "\n\033[38;5;93mrequires an atlas directory with the hcp 0.7mm T1w and T2w brain and non-brain extracted templates. Uses the biobank gradient file for gradient unwarp.\033[0m"
+  echo -e "\n\033[38;5;93mYou may have to tweek the module load commands depending on installation\033[0m"
+  echo -e "\nUSAGE:"
+  echo -e "\t-s  Path/to/hcp/directory        \033[1;31mREQUIRED\033[0m"
+  echo -e "\t-i  BIDS ID                      \033[1;31mREQUIRED\033[0m"
+  echo -e "\t-c  Path/to/script/directory     \033[1;31mREQUIRED\033[0m"
+  echo -e "\t-a  Path/to/atlas directory      \033[1;31mREQUIRED\033[0m"
+  echo -e "\t-n  dont redo the whole hcp prefreesurfer stage (flag)"
+  echo -e "\t-b  Keep registrations as they are but just redo brain extraction with MRI_synthstrip (flag)"
+  echo -e "\nExample Usage: sbatch Johns_HCP_prefreesurfer.sh -s /path/to/HCP/directory -i 250 -c /path/to/scripts -a /path/to/atlas -b"
+  exit 0
+}
+
+# Initialize optional flags
+no_reg=false
+bet=false
+
+# Process command-line options
+while getopts "s:i:c:a:hnb" opt; do
+  case $opt in
+    s) study_folder="${OPTARG}" ;;
+    i) id="${OPTARG}" ;;
+    c) scripts="${OPTARG}" ;;
+    a) atlas="${OPTARG}" ;;
+    h) usage ;;
+    n) no_reg=true ;;
+    b) bet=true ;;
+    \?) echo -e "\033[1;31mInvalid option. Use -h for help.\033[0m" >&2; usage ;;
+  esac
+done
+
+# Check required arguments
+for arg in study_folder id scripts atlas; do
+  if [ -z "${!arg}" ]; then
+    echo -e "\033[1;31mError: $arg not set. Use -h for help.\033[0m"
+    exit 1
+  fi
+done
+
+################################################################################
+#LOAD MODULES/DEPENDENCIES AND DEFINE ALL MAJOR PATHS/VARIABLES
+################################################################################
+
+module load fsl
+module load freesurfer
+module load ImageMagick
+module load ConnectomeWorkbench
+
+# Echo out user-supplied paths for clarity
+echo "Study Folder: ${study_folder}"
+echo "ID: ${id}"
+echo "Scripts Directory: ${scripts}"
+echo "Atlas Directory: ${atlas}"
+
+# Define main directories
+QC_folder="${study_folder}/${id}/sessions/QC"
+participant_folder="${study_folder}/${id}/sessions/${id}/hcp/${id}"
+T1wFolder="${participant_folder}/T1w"
+T2wFolder="${participant_folder}/T2w"
+T2wImage_Basename="T2w"
+T1wImage_Basename="T1w"
+timestamp=$(date +"%Y%m%d_%H%M%S")
+LOG_FILE="${study_folder}/${id}/processing/logs/comlogs/Johns_prefreesurfer_${timestamp}.log"
+exec > "${LOG_FILE}"
+
+# Output T2w and bias fields
+OutputT2wImage="${T1wFolder}/${T2wImage_Basename}_acpc_dc.nii.gz"
+BiasField="${T1wFolder}/BiasField_acpc_dc.nii.gz"
+BrainImage="${T1wFolder}/${T1wImage_Basename}_acpc_dc_brain.nii.gz"
+
+# Temporary registration folder
+mkdir -p "${participant_folder}/MNINonLinear/tmp_fix_reg"
+
+################################################################################
+# DO WORK
+################################################################################
+
+echo "========================================"
+echo "Started on ${timestamp}"
+echo "Participant ID: ${id}"
+echo "Study Folder: ${study_folder}"
+echo "Log File: ${LOG_FILE}"
+echo "========================================"
+
+
+if [ "$no_reg" = false ]; then
+  
+  echo "**** generating directories ****"
+  mkdir -p "${T1wFolder}" \
+               "${participant_folder}/T2w/xfms" \
+               "${participant_folder}/T1w/xfms" 
+	
+  echo "**** T1w ACPC alignment ${participant_folder}/T1w/xfms and ${participant_folder}/T2w/xfms ****"
+  if [ ! -f "${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_dc_restore_brain_old.nii.gz" ]; then
+	 cp -r "${T1wFolder}/T2w_acpc_dc_restore_brain.nii.gz" "${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_dc_restore_brain_old.nii.gz" 
+	 cp -r "${T1wFolder}/T1w_acpc_dc_restore_brain.nii.gz" "${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_acpc_dc_restore_brain_old.nii.gz"  
+	 cp -r "${T1wFolder}/T1w_acpc_dc_restore.nii.gz" "${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_acpc_dc_restore_old.nii.gz" 
+	 cp -r "${T1wFolder}/T2w_acpc_dc_restore.nii.gz" "${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_dc_restore_old.nii.gz"
+	 cp -r "${participant_folder}/MNINonLinear/T2w_restore_brain.nii.gz" "${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_restore_brain_old.nii.gz"
+	 cp -r "${participant_folder}/MNINonLinear/T1w_restore_brain.nii.gz" "${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_restore_brain_old.nii.gz"
+	 cp -r "${participant_folder}/MNINonLinear/T2w_restore.nii.gz" "${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_restore_old.nii.gz"
+	 cp -r "${participant_folder}/MNINonLinear/T1w_restore.nii.gz" "${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_restore_old.nii.gz"
+  fi
+  rm -rf "${participant_folder}/T1w/ACPCAlignment" 
+  rm -rf "${participant_folder}/T2w/ACPCAlignment"
+  mkdir -p "${participant_folder}/T1w/ACPCAlignment" "${participant_folder}/T2w/ACPCAlignment"
+  cp "${participant_folder}/unprocessed/T1w/${id}_T1w_MPR1.nii.gz" "${participant_folder}/T1w/T1w.nii.gz"
+  robustfov -i "${participant_folder}/T1w/T1w.nii.gz" \
+            -m "${participant_folder}/T1w/ACPCAlignment/roi2full.mat" \
+            -r "${participant_folder}/T1w/ACPCAlignment/input_robustfov.nii.gz"
+  convert_xfm -omat "${participant_folder}/T1w/ACPCAlignment/full2roi.mat" \
+              -inverse "${participant_folder}/T1w/ACPCAlignment/roi2full.mat"
+  flirt -interp spline \
+        -in "${participant_folder}/T1w/ACPCAlignment/input_robustfov.nii.gz" \
+        -ref "${atlas}/MNI152_T1_0.7mm.nii.gz" \
+        -omat "${participant_folder}/T1w/ACPCAlignment/roi2std.mat" \
+        -out "${participant_folder}/T1w/ACPCAlignment/acpc_mni.nii.gz"
+  convert_xfm -omat "${participant_folder}/T1w/ACPCAlignment/full2std.mat" \
+              -concat "${participant_folder}/T1w/ACPCAlignment/roi2std.mat" "${participant_folder}/T1w/ACPCAlignment/full2roi.mat"
+  aff2rigid "${participant_folder}/T1w/ACPCAlignment/full2std.mat" "${T1wFolder}/xfms/acpc.mat"
+  applywarp --rel --interp=spline \
+            -i "${participant_folder}/T1w/T1w.nii.gz" \
+            -r "${atlas}/MNI152_T1_0.7mm.nii.gz" \
+            --premat="${T1wFolder}/xfms/acpc.mat" \
+            -o "${T1wFolder}/T1w_acpc.nii.gz"
+
+  echo "**** T2w ACPC alignment ****"
+  cp "${participant_folder}/unprocessed/T2w/${id}_T2w_SPC1.nii.gz" "${participant_folder}/T2w/T2w.nii.gz"
+  robustfov -i "${participant_folder}/T2w/T2w.nii.gz" \
+            -m "${participant_folder}/T2w/ACPCAlignment/roi2full.mat" \
+            -r "${participant_folder}/T2w/ACPCAlignment/input_robustfov.nii.gz"
+  convert_xfm -omat "${participant_folder}/T2w/ACPCAlignment/full2roi.mat" \
+              -inverse "${participant_folder}/T2w/ACPCAlignment/roi2full.mat"
+  flirt -interp spline \
+        -in "${participant_folder}/T2w/ACPCAlignment/input_robustfov.nii.gz" \
+        -ref "${atlas}/MNI152_T2_0.7mm.nii.gz" \
+        -omat "${participant_folder}/T2w/ACPCAlignment/roi2std.mat" \
+        -out "${participant_folder}/T2w/ACPCAlignment/acpc_mni.nii.gz"
+  convert_xfm -omat "${participant_folder}/T2w/ACPCAlignment/full2std.mat" \
+              -concat "${participant_folder}/T2w/ACPCAlignment/roi2std.mat" "${participant_folder}/T2w/ACPCAlignment/full2roi.mat"
+  aff2rigid "${participant_folder}/T2w/ACPCAlignment/full2std.mat" "${participant_folder}/T2w/xfms/acpc.mat"
+  applywarp --rel --interp=spline \
+            -i "${participant_folder}/T2w/T2w.nii.gz" \
+            -r "${atlas}/MNI152_T2_0.7mm.nii.gz" \
+            --premat="${participant_folder}/T2w/xfms/acpc.mat" \
+            -o "${participant_folder}/T2w/T2w_acpc.nii.gz"
+
+  echo "**** Generating T2w brain template for future registration ****"
+  mri_synthstrip -i "${participant_folder}/T2w/T2w.nii.gz" \
+                 -o "${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_ori_brain_nocoreg.nii.gz"
+  mri_synthstrip -i "${participant_folder}/T2w/T2w_acpc.nii.gz" \
+                 -o "${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_brain.nii.gz"
+  mri_synthstrip -i "${participant_folder}/T1w/T1w_acpc.nii.gz" \
+                 -o "${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_acpc_brain.nii.gz"
+
+  echo "**** Running fieldmap processing and gradient distortion unwarp ****"
+  Infield="${participant_folder}/T2w/T2wToT1wDistortionCorrectAndReg/FieldMap"
+  T2w2T1w="${participant_folder}/T2w/T2wToT1wDistortionCorrectAndReg/T2w2T1w"
+  InputCoeffs="${scripts}/bb_GDC_coeff.grad"
+  rm -rf "${T2w2T1w}"
+  mkdir -p "${T2w2T1w}"
+  rm -rf "${Infield}"
+  mkdir -p "${Infield}"
+
+  fslmaths "${participant_folder}/unprocessed/FieldMap1/${id}_FieldMap_Magnitude.nii.gz" -Tmean "${Infield}/Magnitude"
+
+  mri_synthstrip -i "${Infield}/Magnitude.nii.gz" \
+         -o "${Infield}/Magnitude_brain.nii.gz"
+  imcp ${participant_folder}/unprocessed/FieldMap1/${id}_FieldMap_Phase.nii.gz ${Infield}/Phase.nii.gz 
+
+  fsl_prepare_fieldmap SIEMENS ${Infield}/Phase ${Infield}/Magnitude_brain ${Infield}/FieldMap 2.47
+
+  fslroi "${Infield}/Magnitude" "${Infield}/Magnitude_vol1.nii.gz" 0 1
+
+  cd ${scripts}/gradunwarp-master/
+  source gradunwarp.build/bin/activate
+  cd ${Infield}
+  gradient_unwarp.py "${Infield}/Magnitude_vol1.nii.gz" trilinear.nii.gz siemens -g $InputCoeffs -n
+  
+  convertwarp --abs --ref=${Infield}/trilinear.nii.gz --warp1=${Infield}/fullWarp_abs.nii.gz \
+	--relout --out=${Infield}/Magnitude_gdc_warp.nii.gz \
+	--jacobian=${Infield}/Magnitude_gdc_warp_jacobian.nii.gz
+
+  fslmaths ${Infield}/Magnitude_gdc_warp_jacobian -Tmean ${Infield}/Magnitude_gdc_warp_jacobian
+  applywarp --rel --interp=spline -i ${Infield}/Magnitude -r ${Infield}/Magnitude_vol1.nii.gz -w ${Infield}/Magnitude_gdc_warp.nii.gz -o ${Infield}/Magnitude_gdc
+  echo "****  Brain extract the warped Magnitude image *****"
+  applywarp --rel --interp=nn -i ${Infield}/Magnitude_brain -r ${Infield}/Magnitude_brain -w ${Infield}/Magnitude_gdc_warp -o ${Infield}/Magnitude_brain_gdc
+  fslmaths ${Infield}/Magnitude_gdc -mas ${Infield}/Magnitude_brain_gdc ${Infield}/Magnitude_brain_gdc  
+  applywarp --rel --interp=spline -i ${Infield}/FieldMap -r ${Infield}/FieldMap -w ${Infield}/Magnitude_gdc_warp -o ${Infield}/FieldMap_gdc
+  fslmaths ${Infield}/FieldMap_gdc -mas ${Infield}/Magnitude_brain_gdc ${Infield}/FieldMap_gdc
+  imcp ${Infield}/Magnitude_gdc ${Infield}/Magnitude
+  imcp ${Infield}/Magnitude_brain_gdc ${Infield}/Magnitude_brain
+  cp ${Infield}/FieldMap_gdc.nii.gz ${Infield}/FieldMap.nii.gz
+
+  echo "**** Forward warping the fieldmap magnitude image and registering to T1w *****"
+  # Forward warp the fieldmap magnitude and register to T1w and T2w images (transform phase image too). dwell time taken from .json file 8.1e-06 for T1, 2.5e-06 for T2.
+  fugue --loadfmap=${Infield}/FieldMap.nii.gz --dwell=0.0000081 --saveshift=${Infield}/FieldMap2T1wShiftMap.nii.gz
+  echo "**** running convertwarp for  T1w *****"
+  convertwarp --relout --rel --ref=${Infield}/Magnitude.nii.gz --shiftmap=${Infield}/FieldMap2T1wShiftMap.nii.gz --out=${Infield}/FieldMap_WarpT1w.nii.gz
+  applywarp --rel --interp=spline -i ${Infield}/Magnitude.nii.gz -r ${Infield}/Magnitude -w ${Infield}/FieldMap_WarpT1w.nii.gz -o ${Infield}/Magnitude_warppedT1w
+  flirt -interp spline -dof 6 -in ${Infield}/Magnitude_warppedT1w -ref ${participant_folder}/T1w/T1w_acpc.nii.gz -out ${Infield}/Magnitude_warppedT1w2T1w_acpc -omat ${Infield}/Fieldmap2T1w_acpc.mat -searchrx -30 30 -searchry -30 30 -searchrz -30 30
+  flirt -in ${Infield}/FieldMap.nii.gz -ref ${participant_folder}/T1w/T1w_acpc.nii.gz -applyxfm -init ${Infield}/Fieldmap2T1w_acpc.mat -out ${Infield}/FieldMap2T1w_acpc
+
+  echo "**** Now T2w *****"
+  fugue --loadfmap=${Infield}/FieldMap.nii.gz --dwell=0.0000025 --saveshift=${Infield}/FieldMap2T2wShiftMap.nii.gz
+  convertwarp --relout --rel --ref=${Infield}/Magnitude --shiftmap=${Infield}/FieldMap2T2wShiftMap.nii.gz --out=${Infield}/FieldMap_WarpT2w.nii.gz
+  applywarp --rel --interp=spline -i ${Infield}/Magnitude -r ${Infield}/Magnitude -w ${Infield}/FieldMap_WarpT2w.nii.gz -o ${Infield}/Magnitude_warppedT2w
+  flirt -interp spline -dof 6 -in ${Infield}/Magnitude_warppedT2w -ref ${participant_folder}/T2w/T2w_acpc.nii.gz -out ${Infield}/Magnitude_warppedT2w2T2w_acpc -omat ${Infield}/Fieldmap2T2w_acpc.mat -searchrx -30 30 -searchry -30 30 -searchrz -30 30
+  flirt -in ${Infield}/FieldMap.nii.gz -ref ${participant_folder}/T2w/T2w_acpc.nii.gz -applyxfm -init ${Infield}/Fieldmap2T2w_acpc.mat -out ${Infield}/FieldMap2T2w_acpc
+
+  echo "*** Converting shift map to warp field and unwarping T1w image ***"
+  fugue --loadfmap=${Infield}/FieldMap2T1w_acpc --dwell=0.0000081 --saveshift=${Infield}/FieldMap2T1w_acpc_ShiftMap.nii.gz
+  convertwarp --relout --rel --ref=${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_acpc_brain.nii.gz --shiftmap=${Infield}/FieldMap2T1w_acpc_ShiftMap.nii.gz \
+	--out=${Infield}/FieldMap2T1w_Warp.nii.gz
+  applywarp --rel --interp=spline -i ${participant_folder}/T1w/T1w_acpc.nii.gz  -r ${participant_folder}/T1w/T1w_acpc.nii.gz  -w ${Infield}/FieldMap2T1w_Warp.nii.gz -o ${Infield}/T1w_acpc.nii.gz
+  applywarp --rel --interp=nn -i ${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_acpc_brain.nii.gz -r ${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_acpc_brain.nii.gz \
+	 -w ${Infield}/FieldMap2T1w_Warp.nii.gz -o ${Infield}/T1w_acpc_brain.nii.gz
+  fslmaths ${Infield}/T1w_acpc.nii.gz -mas ${Infield}/T1w_acpc_brain.nii.gz ${Infield}/T1w_acpc_brain.nii.gz
+
+  flirt -in ${Infield}/FieldMap.nii.gz -ref ${participant_folder}/T2w/T2w_acpc.nii.gz  -applyxfm -init ${Infield}/Fieldmap2T2w_acpc.mat -out ${Infield}/FieldMap2T2w_acpc
+
+  echo "*** Now the T2w image ***"
+  fugue --loadfmap=${Infield}/FieldMap2T2w_acpc --dwell=0.0000025 --saveshift=${Infield}/FieldMap2T2wShiftMap.nii.gz
+  convertwarp --relout --rel --ref=${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_brain.nii.gz --shiftmap=${Infield}/FieldMap2T2wShiftMap.nii.gz \
+	--out=${Infield}/FieldMap2T2w_Warp.nii.gz
+  applywarp --rel --interp=spline -i ${participant_folder}/T2w/T2w_acpc.nii.gz  -r ${participant_folder}/T2w/T2w_acpc.nii.gz  -w ${Infield}/FieldMap2T2w_Warp.nii.gz -o ${Infield}/T2w_acpc.nii.gz
+  applywarp --rel --interp=spline -i ${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_brain.nii.gz -r ${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_brain.nii.gz \
+	 -w ${Infield}/FieldMap2T2w_Warp.nii.gz -o ${Infield}/T2w_acpc_brain.nii.gz
+  fslmaths ${Infield}/T2w_acpc.nii.gz -mas ${Infield}/T2w_acpc_brain.nii.gz ${Infield}/T2w_acpc_brain.nii.gz
+
+  echo "*** Renaming T2w files ***"
+  imcp ${Infield}/FieldMap2T2w_Warp ${Infield}/T2w_dc
+  imcp ${Infield}/T2w_acpc "${Infield}/T2w_acpc_dc.nii.gz"
+  imcp ${Infield}/T2w_acpc_brain.nii.gz ${Infield}/T2w_acpc_dc_brain.nii.gz
+
+  echo "*** Now T1w files ***"
+  imcp ${Infield}/FieldMap2T1w_Warp ${Infield}/T1_dc
+  imcp ${Infield}/T1w_acpc ${Infield}/T1w_acpc_dc
+  imcp ${Infield}/T1w_acpc_brain.nii.gz ${Infield}/T1w_acpc_dc_brain.nii.gz
+
+  echo "*** Registering T2w ---> T1w ***"
+    flirt -in "${Infield}/T2w_acpc.nii.gz" \
+     -ref "${Infield}/T1w_acpc_dc.nii.gz" \
+     -omat "${T2w2T1w}/T2w_reg.mat" \
+     -out "${T2w2T1w}/T2w_reg"
+    
+    convertwarp --relout --rel --ref="${Infield}/T1w_acpc_dc.nii.gz" \
+      --warp1="${Infield}/FieldMap2T2w_Warp.nii.gz" \
+      --postmat="${T2w2T1w}/T2w_reg.mat" \
+      --out="${T2w2T1w}/T2w_dc_reg"
+    
+     applywarp --rel --interp=spline -i "${participant_folder}/T2w/T2w_acpc.nii.gz" \
+       -r "${participant_folder}/T1w/T1w_acpc_dc.nii.gz" \
+       -w "${T2w2T1w}/T2w_dc_reg" \
+       -o "${T2w2T1w}/T2w_reg"
+   
+    fslmaths "${T2w2T1w}/T2w_reg" -add 1 \
+      "${T2w2T1w}/T2w_reg" -odt float
+     
+    fslmaths "${T2w2T1w}/T2w_reg" -mul ${Infield}/T1w_acpc_dc.nii.gz -sqrt ${T2w2T1w}/sqrtT1wbyT2w -odt float
+     
+    cp "${T2w2T1w}/T2w_dc_reg.nii.gz" "${participant_folder}/T1w/xfms/T2w_reg_dc.nii.gz"
+    cp "${T2w2T1w}/T2w_reg.nii.gz" "${participant_folder}/T1w/T2w_acpc_dc.nii.gz"
+    cp ${Infield}/T1w_acpc_dc_brain.nii.gz ${participant_folder}/T1w/T1w_acpc_dc_brain.nii.gz
+    cp ${Infield}/T1w_acpc_dc.nii.gz ${participant_folder}/T1w/T1w_acpc_dc.nii.gz
+  
+    echo "**** Generating coregistration transforms for T2w.nii.gz --> T1w.nii.gz ****"
+    convertwarp --relout --rel --ref="${atlas}/MNI152_T1_0.7mm.nii.gz" \
+         --premat="${participant_folder}/T2w/xfms/acpc.mat" \
+         --warp1="${participant_folder}/T1w/xfms/T2w_reg_dc.nii.gz" \
+         --out="${T1wFolder}/xfms/OrgT2w2T1w_PreFS.nii.gz"
+
+    # Define variables for bias-field correction
+    mkdir -p "${participant_folder}/MNINonLinear/xfms"
+    BiasFieldSmoothingSigma=5
+    Factor=0.5
+    OutputBiasField="${T1wFolder}/BiasField_acpc_dc.nii.gz"
+ 
+    rm -rf "${participant_folder}/T1w/BiasFieldCorrection_sqrtT1wXT2w"
+    mkdir -p "${participant_folder}/T1w/BiasFieldCorrection_sqrtT1wXT2w"
+    BiasOut="${participant_folder}/T1w/BiasFieldCorrection_sqrtT1wXT2w"
+    
+    echo "****  Forming sqrt(T1w*T2w), masking this and normalising by the mean **** "
+    fslmaths ${T1wFolder}/T1w_acpc_dc.nii.gz -mul "${T1wFolder}/T2w_acpc_dc.nii.gz" -abs -sqrt ${BiasOut}/T1wmulT2w.nii.gz -odt float
+    fslmaths ${BiasOut}/T1wmulT2w.nii.gz -mas "${T1wFolder}/T1w_acpc_dc_brain.nii.gz" ${BiasOut}/T1wmulT2w_brain.nii.gz
+    meanbrainval=`fslstats ${BiasOut}/T1wmulT2w_brain.nii.gz -M`
+    fslmaths ${BiasOut}/T1wmulT2w_brain.nii.gz -div ${meanbrainval} ${BiasOut}/T1wmulT2w_brain_norm.nii.gz
+
+    echo "**** Smoothing the normalised sqrt image, using within-mask smoothing **** "
+    fslmaths ${BiasOut}/T1wmulT2w_brain_norm.nii.gz -bin -s ${BiasFieldSmoothingSigma} \
+	     ${BiasOut}/SmoothNorm_s${BiasFieldSmoothingSigma}.nii.gz
+    fslmaths ${BiasOut}/T1wmulT2w_brain_norm.nii.gz -s ${BiasFieldSmoothingSigma} -div \
+	     ${BiasOut}/SmoothNorm_s${BiasFieldSmoothingSigma}.nii.gz ${BiasOut}/T1wmulT2w_brain_norm_s${BiasFieldSmoothingSigma}.nii.gz
+
+    echo "**** Dividing normalised sqrt image by smoothed version ****"
+    fslmaths ${BiasOut}/T1wmulT2w_brain_norm.nii.gz -div ${BiasOut}/T1wmulT2w_brain_norm_s${BiasFieldSmoothingSigma}.nii.gz \
+	     ${BiasOut}/T1wmulT2w_brain_norm_modulate.nii.gz
+
+    echo "****  Creating a mask and filling holes **** "
+    STD=`fslstats ${BiasOut}/T1wmulT2w_brain_norm_modulate.nii.gz -S`
+    echo ${STD}
+    MEAN=`fslstats ${BiasOut}/T1wmulT2w_brain_norm_modulate.nii.gz -M`
+    echo ${MEAN}
+    Lower=`echo "${MEAN} - (${STD} * ${Factor})" | bc -l`
+    echo ${Lower}
+    fslmaths ${BiasOut}/T1wmulT2w_brain_norm_modulate -thr ${Lower} -bin -ero -mul 255 ${BiasOut}/T1wmulT2w_brain_norm_modulate_mask
+    wb_command -volume-remove-islands ${BiasOut}/T1wmulT2w_brain_norm_modulate_mask.nii.gz ${BiasOut}/T1wmulT2w_brain_norm_modulate_mask.nii.gz
+
+    echo "****  Extrapolating normalised sqrt image from mask region out to whole FOV **** "
+    fslmaths ${BiasOut}/T1wmulT2w_brain_norm.nii.gz -mas ${BiasOut}/T1wmulT2w_brain_norm_modulate_mask.nii.gz \
+	     -dilall ${BiasOut}/bias_raw.nii.gz -odt float
+    fslmaths ${BiasOut}/bias_raw.nii.gz -s ${BiasFieldSmoothingSigma} ${OutputBiasField}
+
+    echo "****  Using bias field output to create corrected images **** "
+    fslmaths ${T1wFolder}/T1w_acpc_dc.nii.gz -div ${OutputBiasField} -mas "${T1wFolder}/T1w_acpc_dc_brain.nii.gz" "${T1wFolder}/T1w_acpc_dc_restore_brain.nii.gz" -odt float
+    fslmaths ${T1wFolder}/T1w_acpc_dc.nii.gz -div ${OutputBiasField} "${T1wFolder}/T1w_acpc_dc_restore.nii.gz" -odt float
+    fslmaths "${T1wFolder}/T2w_acpc_dc.nii.gz" -div ${OutputBiasField} -mas "${T1wFolder}/T1w_acpc_dc_brain.nii.gz" "${T1wFolder}/T2w_acpc_dc_restore_brain.nii.gz" -odt float
+    fslmaths "${T1wFolder}/T2w_acpc_dc.nii.gz" -div ${OutputBiasField} "${T1wFolder}/T2w_acpc_dc_restore" -odt float
+  
+    # --- Begin Atlas Registration to MNI ---
+    
+    rm -rf "${participant_folder}/MNINonLinear/xfms"
+    rm -rf "${participant_folder}/T1w/BiasFieldCorrection_sqrtT1wXT2w"
+    mkdir -p "${participant_folder}/MNINonLinear/xfms"
+    mkdir -p "${participant_folder}/T1w/BiasFieldCorrection_sqrtT1wXT2w"
+  
+    echo "****  Linear registration of T1w image to MNI **** "
+    flirt -interp spline -dof 12 -in "${T1wFolder}/T1w_acpc_dc_restore_brain.nii.gz" -ref ${atlas}/MNI152_T1_0.7mm_brain.nii.gz -omat \
+	     ${participant_folder}/MNINonLinear/xfms/acpc2MNILinear.mat -out ${participant_folder}/MNINonLinear/xfms/T1w_acpc_dc_restore_brain_to_MNILinear
+    
+    echo "****  Non-linear registration of T1w image to MNI **** "
+    fnirt --in="${T1wFolder}/T1w_acpc_dc_restore.nii.gz" --ref=$FSLDIR/data/standard/MNI152_T1_2mm.nii.gz \
+	--aff=${participant_folder}/MNINonLinear/xfms/acpc2MNILinear.mat --refmask="$FSLDIR/data/standard/MNI152_T1_2mm_brain_mask_dil.nii.gz" \
+	--fout="${participant_folder}/MNINonLinear/xfms/acpc_dc2standard.nii.gz" --jout=${participant_folder}/MNINonLinear/xfms/NonlinearRegJacobians.nii.gz \
+	--refout=${participant_folder}/MNINonLinear/xfms/IntensityModulatedT1.nii.gz \
+	--iout=${participant_folder}/MNINonLinear/xfms/2mmReg.nii.gz \
+	--logout=${participant_folder}/MNINonLinear/xfms/NonlinearReg.txt \
+	--intout=${participant_folder}/MNINonLinear/xfms/NonlinearIntensities.nii.gz \
+	--cout=${participant_folder}/MNINonLinear/xfms/NonlinearReg.nii.gz --config=T1_2_MNI152_2mm
+
+    echo "**** Computing 2mm warp ****"
+    invwarp -w ${participant_folder}/MNINonLinear/xfms/acpc_dc2standard.nii.gz -o "${participant_folder}/MNINonLinear/xfms/standard2acpc_dc.nii.gz" \
+	-r $FSLDIR/data/standard/MNI152_T1_2mm.nii.gz
+
+    echo "**** Generating T1w set of warped outputs ****"
+    applywarp --rel --interp=spline -i "${T1wFolder}/T1w_acpc_dc.nii.gz" -r ${atlas}/MNI152_T1_0.7mm.nii.gz \
+	-w ${participant_folder}/MNINonLinear/xfms/acpc_dc2standard.nii.gz \
+	-o ${participant_folder}/MNINonLinear/T1w
+    applywarp --rel --interp=spline -i "${T1wFolder}/T1w_acpc_dc_restore.nii.gz" \
+	-r ${atlas}/MNI152_T1_0.7mm.nii.gz -w "${participant_folder}/MNINonLinear/xfms/acpc_dc2standard.nii.gz" \
+	-o "${participant_folder}/MNINonLinear/T1w_restore"
+    applywarp --rel --interp=spline -i "${T1wFolder}/T1w_acpc_dc_restore_brain.nii.gz" -r ${atlas}/MNI152_T1_0.7mm.nii.gz \
+	-w "${participant_folder}/MNINonLinear/xfms/acpc_dc2standard.nii.gz" -o "${participant_folder}/MNINonLinear/T1w_restore_brain"
+    fslmaths "${participant_folder}/MNINonLinear/T1w_restore" -mas "${participant_folder}/MNINonLinear/T1w_restore_brain" \
+	     "${participant_folder}/MNINonLinear/T1w_restore_brain"
+
+    echo "**** Now T2w images ****"
+    applywarp --rel --interp=spline -i "${T1wFolder}/T2w_acpc_dc.nii.gz" -r ${atlas}/MNI152_T1_0.7mm.nii.gz \
+	 -w "${participant_folder}/MNINonLinear/xfms/acpc_dc2standard.nii.gz" -o "${participant_folder}/MNINonLinear/T2w"
+    applywarp --rel --interp=spline -i "${T1wFolder}/T2w_acpc_dc_restore.nii.gz" -r ${atlas}/MNI152_T1_0.7mm.nii.gz \
+	 -w "${participant_folder}/MNINonLinear/xfms/acpc_dc2standard.nii.gz" -o "${participant_folder}/MNINonLinear/T2w_restore"
+    applywarp --rel --interp=spline -i "${T1wFolder}/T2w_acpc_dc_restore_brain.nii.gz" -r ${atlas}/MNI152_T1_0.7mm.nii.gz \
+	 -w "${participant_folder}/MNINonLinear/xfms/acpc_dc2standard.nii.gz" -o "${participant_folder}/MNINonLinear/T2w_restore_brain"
+    fslmaths "${participant_folder}/MNINonLinear/T2w_restore" -mas "${participant_folder}/MNINonLinear/T2w_restore_brain" "${participant_folder}/MNINonLinear/T2w_restore_brain"
+
+    echo "******** Preparing QC images for T2 brain extraction in MNI space ********"
+    T2w_post="${participant_folder}/MNINonLinear/T2w_restore_brain.nii.gz"
+    T2w_pre="${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_restore_brain_old.nii.gz"
+    T2w_native_space_pre="${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_dc_restore_brain_old.nii.gz"
+    T2w_native_space_post="${participant_folder}/T1w/T2w_acpc_dc_restore_brain.nii.gz"
+    T1_MNIspace="${participant_folder}/MNINonLinear/T1w_restore.nii.gz"
+    T1w_native_space_pre="${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_acpc_dc_restore_old.nii.gz"
+    T1w_native_space_post="${participant_folder}/T1w/T1w_acpc_dc_restore.nii.gz"
+    pre_output_image_tmp="${participant_folder}/MNINonLinear/tmp_fix_reg/pre_T1w_to_T2w_MNI_check.png"
+    post_output_image_tmp="${participant_folder}/MNINonLinear/tmp_fix_reg/post_T1w_to_T2w_MNI_check.png"
+    pre_output_image_native_space_tmp="${participant_folder}/MNINonLinear/tmp_fix_reg/pre_T1w_to_T2w_MNI_check.png"
+    post_output_image_native_space_tmp="${participant_folder}/MNINonLinear/tmp_fix_reg/post_T1w_to_T2w_MNI_check.png"
+
+    mkdir -p "${QC_folder}/prefreesurfer_fix/"
+
+    slicer "${T2w_pre}" "${T1_MNIspace}" -a "${pre_output_image_tmp}"
+    slicer "${T2w_post}" "${T1_MNIspace}" -a "${post_output_image_tmp}"
+    slicer "${T2w_native_space_pre}" "${T1w_native_space_pre}" -a "${pre_output_image_native_space_tmp}"
+    slicer "${T2w_native_space_post}" "${T1w_native_space_post}" -a "${post_output_image_native_space_tmp}"
+
+    output_image_1="${QC_folder}/prefreesurfer_fix/${id}_T2wOverT1w_in_Native_Space.png"
+    output_image_2="${QC_folder}/prefreesurfer_fix/${id}_T2wOverT1w_in_MNI_Space.png"
+
+    montage \
+      \( "${pre_output_image_tmp}" -set label "${id} T2 brain in MNI space before running prefreesurfer fix" \) \
+      \( "${post_output_image_tmp}" -set label "${id} T2 brain in MNI space after running prefreesurfer fix" \) \
+      -geometry +2+2 "${output_image_2}" 
+    montage \
+      \( "${pre_output_image_native_space_tmp}" -set label "${id} T2 brain in native space using HCP pipeline" \) \
+      \( "${post_output_image_native_space_tmp}" -set label "${id} T2 brain in native space using Johns hcp pipeline" \) \
+      -geometry +2+2 "${output_image_1}" 
+
+  else
+    echo "Skipping coregistration corrections as -n flag is set."
+  fi
+  
+########################################
+#Brain Extraction and QC pictures
+########################################
+echo "**** Brain Extraction and outputting QC pictures ****"
+if [ "$bet" = true ]; then
+    echo "Using alternative brain extraction: MRI Synthstrip"
+    mkdir -p "${QC_folder}/prefreesurfer_fix/"
+    
+    if [ ! -f "${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_dc_restore_brain_old.nii.gz" ]; then
+        cp "${T1wFolder}/T1w_acpc_dc_restore.nii.gz" \
+           "${T1wFolder}/T1w_acpc_dc_restore_brain_old.nii.gz"
+        cp "${T1wFolder}/T2w_acpc_dc_restore_brain.nii.gz" \
+           "${participant_folder}/MNINonLinear/tmp_fix_reg/T2w_acpc_dc_restore_brain_old.nii.gz"
+    fi
+    
+    mri_synthstrip -i "${T1wFolder}/T1w_acpc_dc_restore.nii.gz" \
+                   -o "${T1wFolder}/T1w_acpc_dc_restore_brain.nii.gz"
+    
+    # Output QC images for T1
+    T1_brain_post="${T1wFolder}/T1w_acpc_dc_restore_brain.nii.gz"
+    T1_brain_pre="${participant_folder}/MNINonLinear/tmp_fix_reg/T1w_acpc_dc_restore_brain_old.nii.gz"
+    T1_subspace="${T1wFolder}/T1w_acpc_dc_restore.nii.gz"
+    pre_output_image_tmp="${participant_folder}/MNINonLinear/tmp_fix_reg/pre_T1w_to_T1w_reg_check.png"
+    post_output_image_tmp="${participant_folder}/MNINonLinear/tmp_fix_reg/post_T1w_to_T1w_reg_check.png"
+    output_image="${QC_folder}/prefreesurfer_fix/${id}_T1wbrain_overT1wOverlay.png"
+
+    slicer "${T1_brain_pre}" "${T1_subspace}" -a "${pre_output_image_tmp}"
+    slicer "${T1_brain_post}" "${T1_subspace}" -a "${post_output_image_tmp}"
+
+    montage \
+      \( "${pre_output_image_tmp}" -set label "${id} HCP FNIRT brain extraction" \) \
+      \( "${post_output_image_tmp}" -set label "${id} MRI synthstrip" \) \
+      -geometry +2+2 "${output_image}" 
+
+else
+    echo -e "\033[32mRegistration of T2w --> T1w images are done, normalised and hopefully working\033[0m"
+fi
+
+#rm -rf "${participant_folder}/MNINonLinear/tmp_fix_reg" 
+
+echo "Finished prefreesurfer_fix script."
+
+
+
+
