@@ -171,4 +171,4 @@ If you use this pipeline, please cite:
 
 ---
 
-## Maintainer: Your Name [you@institute.edu](mailto:you@institute.edu)   •   Last update: 29‑Jul‑2025
+## Maintainer: John Broulidakis (jbroulidakis_AT_gmail.com ; john.broulidakis_AT_psy.ox.ac.uk)  •   Last update: 29‑Jul‑2025
