@@ -75,23 +75,17 @@ If these are missing the job will abort with an error.
 •  tckgen (ACT deterministic)
 •  tcksift
 
-For reproducibility and to avoid module pollution on multi‑user clusters, we recommend:
+For reproducibility and to avoid module pollution on multi‑user clusters, I recommend:
 
 ```
-# create a fresh environment
-conda create -n mrtrix3-3.0.4 gcc cmake python=3.11
-conda activate mrtrix3-3.0.4
-
-# clone patched source (includes white‑matter‑hyperintensity 5th tissue
-git clone https://github.com/yourlab/mrtrix3-wm5tt.git
-cd mrtrix3-wm5tt && ./configure && ./build
+Create a fresh environment and clone patched source
 ```
 
 Patch summary:
 
 ```
 * File modified: `lib/mrtrix3/_5ttgen/hsvs.py`
-* Behaviour: adds **white matter hyperintensities (WMH)** as **the 5th tissue type** in the output 5‑TT image so that downstream ACT uses true five‑tissue RFs (GM, CSF, deep GM, sub‑cortical, **WM**); ordinary white matter remains tissue 1.
+* Behaviour: adds **white matter hyperintensities (WMH)** as **the 5th tissue type** in the output 5‑TT image so that downstream ACT uses true five‑tissue RFs (GM, CSF, WM, sub‑cortical, WMH); ordinary white matter remains tissue 3
 * Implementation: edit `lib/mrtrix3/_5ttgen/hsvs.py` and modify the **ASEG_STRUCTURES** list:
 ```
 
@@ -105,8 +99,8 @@ ASEG_STRUCTURES = [ ( 5,  4, 'Left-Inf-Lat-Vent'),
                     (44,  4, 'Right-Inf-Lat-Vent'),
                     (57,  5, 'Right-Lesion'),
                     (62,  4, 'Right-vessel'),
-                    (72,  4, '5th-Ventricle')
-                    (77,  5, ‘WM-Hypointensities’)
+                    (72,  4, '5th-Ventricle'
+Add this bit -->    (77,  5, ‘WM-Hypointensities’)
                     (250, 3, 'Fornix') ]
 ```
 
@@ -127,7 +121,7 @@ sbatch Johns\_HCP\_prefreesurfer&#x20;
 -c /path/to/scripts&#x20;
 -a /path/to/atlas
 
-# 2. Deterministic tractography
+# 2. Tractography
 
 source activate mrtrix3-3.0.4
 sbatch det\_trac.sh&#x20;
