@@ -343,24 +343,13 @@ tck2connectome \
   -stat_edge mean \
   -force
 
-tck2connectome \
-  -symmetric \
-  -zero_diagonal \
-  "${participant_folder}/dwi/tracks_20M.tck" \
-  "${participant_folder}/dwi/${id}_parcels_coreg_yeo.mif" \
-  "${participant_folder}/dwi/${id}_yeo_mean_FA_connectome.csv" \
-  -scale_file "${participant_folder}/dwi/mean_FA_per_streamline.csv" \
-  -tck_weights_in "${participant_folder}/dwi/sift_2M.txt" \
-  -stat_edge mean \
-  -force
-
 echo "****** Saving results ******"
 
 # Create output directories for diffusion response files
 mkdir -p "${results}/det_trac_results/diff_response/wm"
 mkdir -p "${results}/det_trac_results/diff_response/gm"
 mkdir -p "${results}/det_trac_results/diff_response/csf"
-mkdir -p "${results}/det_trac_results/diff_response/whm"
+mkdir -p "${results}/det_trac_results/diff_response/wmh"
 mkdir -p "${results}/det_trac_results/weighted_by_FA_inhyper"
 mkdir -p "${results}/det_trac_results/weighted_by_FBC_inhyper"
 
@@ -384,7 +373,7 @@ cp "${participant_folder}/dwi/average_diffusion_response/csf.txt" \
    || echo "**error copying CSF response**"
 
 cp "${participant_folder}/dwi/average_diffusion_response/wmh.txt" \
-   "${results}/det_trac_results/diff_response/whm/${id}_wmh_response.txt" \
+   "${results}/det_trac_results/diff_response/wmh/${id}_wmh_response.txt" \
    || echo "**error copying WMH response**"
 
 # Clean up temporary files
