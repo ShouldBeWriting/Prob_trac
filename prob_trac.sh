@@ -1,47 +1,57 @@
 #!/bin/bash
-#SBATCH --job-name=det_trac
-#SBATCH --time=24:00:00
-#SBATCH --nodes=2
-#SBATCH --ntasks-per-node=2
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=15gb
-#SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:1
+#SBATCH --job-name=prob_track
+#SBATCH --partition=gpu_long   # keep the CUDA-eddy GPU queue
+#SBATCH --nodes=1              # single shared-memory job
+#SBATCH --ntasks=1             # one Slurm task
+#SBATCH --cpus-per-task=10     # 10 OpenMP / MRtrix threads
+#SBATCH --gres=gpu:1           # one GPU for eddy-cuda
+#SBATCH --mem=32G              # enough RAM for 20 M streamlines + MRtrix
 
 set -euo pipefail  
 
 usage() {
   echo "Usage: $0 -s /path/to/dwi/directory \\
-               -i subjectID \
+               -i subjectID \\
                -c /path/to/CBIG-master/ \\
                -d /path/to/hcp/directory \\
-               -r /path/to/output/of/script"
+               -r /path/to/output/of/script \\
+               [-g]"
+  echo "  -g    Enable Gibbs ringing correction (mrdegibbs) before topup"
   exit 1
 }
 
-while getopts "s:i:c:d:r:?" opt; do
+use_mrdegibbs=0
+
+while getopts "s:i:c:d:r:g?" opt; do
     case $opt in
         s) dwi=${OPTARG} ;;
         i) id=${OPTARG} ;;
         c) script=${OPTARG} ;;
         d) study_folder=${OPTARG} ;;
         r) results=${OPTARG} ;;
+        g) use_mrdegibbs=1 ;;
         *) usage ;;
     esac
 done
 
-if [[ -z "$study_folder" || -z "$id" || -z "$script" || -z "$dwi" || -z "$results" ]]; then
+if [[ -z "${study_folder:-}" || -z "${id:-}" || -z "${script:-}" || -z "${dwi:-}" || -z "${results:-}" ]]; then
     usage
 fi
 
 echo "Study Folder: ${study_folder}"
 echo "ID: ${id}"
+if [ "$use_mrdegibbs" -eq 1 ]; then
+    echo "Gibbs correction: ENABLED"
+else
+    echo "Gibbs correction: disabled"
+fi
 
 source_dir="/vols/Data/husain_lab/Pablo_scripts"
 log_dir="${results}"
 participant_folder="${dwi}/${id}"
 mkdir -p "${participant_folder}/dwi"
 mkdir -p "${participant_folder}/T1"
+mkdir -p  "${participant_folder}/T1/reg_tmp"
 mkdir -p "${log_dir}"
 timestamp=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="${participant_folder}/${id}_tractography_${timestamp}.log"
@@ -73,10 +83,15 @@ csvFile="${log_dir}/included_subjects_outlier.csv"
 excludedCsvFile="${log_dir}/excluded_subjects_outlier.csv"
 
 
+module load Miniconda3
+module load fsl
 module load freesurfer
-module load CUDA
-module load fsl/6.0.7.3
-module load Python/3.11.3-GCCcore-12.3.0
+module load ANTs
+export QT_XCB_GL_INTEGRATION=""
+source /cvmfs/software.fmrib.ox.ac.uk/eb/el9/software/Miniconda3/24.1.2-0/etc/profile.d/conda.sh
+conda activate mrtrix3_env
+export SUBJECTS_DIR="${study_folder}/${id}/sessions/${id}/hcp/${id}/T1w"
+
 
 if [ ! -f "${participant_folder}/dwi/acqp.txt" ]; then
     cp "${source_dir}/acqp.txt" "${participant_folder}/dwi/acqp.txt" || { echo "Failed to copy acqp.txt from ${source_dir}"; exit 1; }
@@ -117,40 +132,45 @@ fi
 ## Set FreeSurfer DIR
 export SUBJECTS_DIR="${study_folder}/${id}/sessions/${id}/hcp/${id}/T1w"
 
-fslroi "${participant_folder}/dwi/dwi.nii.gz" "${participant_folder}/dwi/nodif" 0 1
+
+# conditional nodif extraction with optional Gibbs ringing correction
+if [ "$use_mrdegibbs" -eq 1 ]; then
+    echo "-----> Running mrdegibbs correction pipeline for ${id}"
+    mrconvert "${participant_folder}/dwi/dwi.nii.gz" "${participant_folder}/T1/reg_tmp/dwi.mif" -fslgrad "${participant_folder}/dwi/bvec" "${participant_folder}/dwi/bval" -force
+    mrdegibbs "${participant_folder}/T1/reg_tmp/dwi.mif"  "${participant_folder}/T1/reg_tmp/dwi_gib.mif" -force
+    mrconvert "${participant_folder}/T1/reg_tmp/dwi_gib.mif" "${participant_folder}/T1/reg_tmp/dwi_gib.nii.gz" -export_grad_fsl "${participant_folder}/T1/reg_tmp/bvecs_mr" "${participant_folder}/T1/reg_tmp/bvals_mr" -force
+    fslroi "${participant_folder}/T1/reg_tmp/dwi_gib.nii.gz" "${participant_folder}/dwi/nodif" 0 1
+else
+    fslroi "${participant_folder}/dwi/dwi.nii.gz" "${participant_folder}/dwi/nodif" 0 1
+fi
+
 fslroi "${participant_folder}/dwi/dwi_PA.nii.gz" "${participant_folder}/dwi/nodif_PA" 0 1
 fslmerge -t "${participant_folder}/dwi/AP_PA_b0.nii.gz" "${participant_folder}/dwi/nodif" "${participant_folder}/dwi/nodif_PA"
 topup --imain="${participant_folder}/dwi/AP_PA_b0.nii.gz" --datain="${participant_folder}/dwi/acqp.txt" --config="${FSLDIR}/etc/flirtsch/b02b0.cnf" --out="${participant_folder}/dwi/topup_AP_PA_b0"
 applytopup --imain="${participant_folder}/dwi/nodif,${participant_folder}/dwi/nodif_PA" --topup="${participant_folder}/dwi/topup_AP_PA_b0" --datain="${participant_folder}/dwi/acqp.txt" --inindex=1,2 --out="${participant_folder}/dwi/hifi_nodif"
-flirt -dof 6 -in "${participant_folder}/T1/T1w_acpc_dc_restore.nii.gz" -ref "${participant_folder}/dwi/nodif" -o "${participant_folder}/dwi/T1_restore_DWI_space"
-flirt -dof 6 -in "${participant_folder}/T1/T1w_acpc_dc_restore_brain.nii.gz" -ref "${participant_folder}/dwi/nodif" -o "${participant_folder}/dwi/T1_restore_brain_DWI_space"
-fslmaths "${participant_folder}/dwi/T1_restore_brain_DWI_space" -bin "${participant_folder}/dwi/T1_restore_brain_DWI_space_bin"
-fslmaths "${participant_folder}/dwi/nodif" -mul "${participant_folder}/dwi/T1_restore_brain_DWI_space_bin" "${participant_folder}/dwi/nodif_brain"
-fslmaths "${participant_folder}/dwi/nodif_brain" -bin "${participant_folder}/dwi/nodif_brain_mask"
+mri_synthstrip -i "${participant_folder}/dwi/hifi_nodif.nii.gz" -m "${participant_folder}/dwi/nodif_brain_mask.nii.gz" -g 
 
-## Eddy Correction
-eddy --imain="${participant_folder}/dwi/dwi.nii.gz" \
-      --mask="${participant_folder}/dwi/nodif_brain_mask.nii.gz" \
-      --index="${participant_folder}/dwi/index.txt" \
-      --acqp="${participant_folder}/dwi/acqp.txt" \
-      --bvecs="${participant_folder}/dwi/bvec" \
-      --bvals="${participant_folder}/dwi/bval" \
-      --fwhm=0 \
-      --topup="${participant_folder}/dwi/topup_AP_PA_b0" \
-      --flm=quadratic \
-      --out="${participant_folder}/dwi/data" \
-      --cnr_maps \
-      --repol \
-      --mporder=16
+# choose input DWI and gradient files depending on whether Gibbs correction was requested
+if [ "${use_mrdegibbs:-0}" -eq 1 ]; then
+    DWI_IN="${participant_folder}/T1/reg_tmp/dwi_gib.nii.gz"
+else
+    DWI_IN="${participant_folder}/dwi/dwi.nii.gz"
+fi
 
-
-module load Miniconda3
-module load fsl
-module load freesurfer
-export QT_XCB_GL_INTEGRATION=""
-source /cvmfs/software.fmrib.ox.ac.uk/eb/el9/software/Miniconda3/24.1.2-0/etc/profile.d/conda.sh
-conda activate mrtrix3_env
-export SUBJECTS_DIR="${study_folder}/${id}/sessions/${id}/hcp/${id}/T1w"
+# run eddy on the selected image/gradients
+eddy --imain="${DWI_IN}" \
+     --mask="${participant_folder}/dwi/nodif_brain_mask.nii.gz" \
+     --index="${participant_folder}/dwi/index.txt" \
+     --acqp="${participant_folder}/dwi/acqp.txt" \
+     --bvecs="${participant_folder}/dwi/bvec" \
+     --bvals="${participant_folder}/dwi/bval" \
+     --fwhm=0 \
+     --topup="${participant_folder}/dwi/topup_AP_PA_b0" \
+     --flm=quadratic \
+     --out="${participant_folder}/dwi/data" \
+     --cnr_maps \
+     --repol \
+     --mporder=16
 
 echo -e "\e[31m## ## ## ## RUNNING STAGE 2 ON ${id} ## ## ## ##\e[0m"
  
@@ -185,14 +205,14 @@ fi
 echo "$id,$percentageOutliers" >> "$csvFile"
 
 mrconvert "${participant_folder}/dwi/data.nii.gz" "${participant_folder}/dwi/eddy_corrected_data.mif" -fslgrad "${participant_folder}/dwi/bvec" "${participant_folder}/dwi/bval" -force
-dwi2response dhollander "${participant_folder}/dwi/eddy_corrected_data.mif" "${participant_folder}/dwi/wm.txt" "${participant_folder}/dwi/gm.txt" "${participant_folder}/dwi/csf.txt" -voxels "${participant_folder}/dwi/voxels.mif" -force
-mrconvert "${participant_folder}/dwi/nodif_brain_mask.nii.gz" "${participant_folder}/dwi/mask.mif" -force
-dwi2fod msmt_csd "${participant_folder}/dwi/eddy_corrected_data.mif" -mask "${participant_folder}/dwi/mask.mif" "${participant_folder}/dwi/wm.txt" "${participant_folder}/dwi/wmfod.mif" "${participant_folder}/dwi/gm.txt" "${participant_folder}/dwi/gmfod.mif" "${participant_folder}/dwi/csf.txt" "${participant_folder}/dwi/csffod.mif" -force || { echo "dwi2fod failed for ${id}"; exit 1; }
+dwibiascorrect ants "${participant_folder}/dwi/eddy_corrected_data.mif" "${participant_folder}/dwi/eddy_corrected_data_unbiased.mif" -bias ${participant_folder}/dwi/bias.mif -force
+dwi2response dhollander "${participant_folder}/dwi/eddy_corrected_data_unbiased.mif" "${participant_folder}/dwi/wm.txt" "${participant_folder}/dwi/gm.txt" "${participant_folder}/dwi/csf.txt" -voxels "${participant_folder}/dwi/voxels.mif" -force
+dwi2fod msmt_csd "${participant_folder}/dwi/eddy_corrected_data_unbiased.mif" -mask "${participant_folder}/dwi/mask.mif" "${participant_folder}/dwi/wm.txt" "${participant_folder}/dwi/wmfod.mif" "${participant_folder}/dwi/gm.txt" "${participant_folder}/dwi/gmfod.mif" "${participant_folder}/dwi/csf.txt" "${participant_folder}/dwi/csffod.mif" -force || { echo "dwi2fod failed for ${id}"; exit 1; }
 mrconvert -coord 3 0 "${participant_folder}/dwi/wmfod.mif" -force - | mrcat "${participant_folder}/dwi/csffod.mif" "${participant_folder}/dwi/gmfod.mif" - "${participant_folder}/dwi/vf.mif" -force
 mtnormalise "${participant_folder}/dwi/wmfod.mif" "${participant_folder}/dwi/wmfod_norm.mif" "${participant_folder}/dwi/gmfod.mif" "${participant_folder}/dwi/gmfod_norm.mif" "${participant_folder}/dwi/csffod.mif" "${participant_folder}/dwi/csffod_norm.mif" -mask "${participant_folder}/dwi/mask.mif" -force || { echo "mtnormalise failed for ${id}. Skipping."; exit 1; }
 
 ## Generate a 5-tissue-type (5TT) segmentation from the T1 image
-echo "Generating 5tt_nocoreg.mif..."
+echo "----> Generating 5tt_nocoreg.mif..."
 5ttgen hsvs "${HCP_free}" "${participant_folder}/dwi/5tt_nocoreg.mif" -force
 
 if [ ! -f "${participant_folder}/dwi/5tt_nocoreg.mif" ]; then
@@ -200,10 +220,9 @@ if [ ! -f "${participant_folder}/dwi/5tt_nocoreg.mif" ]; then
     exit 1
 fi
 
-mkdir -p "${participant_folder}/T1/reg_tmp"
 mkdir -p "${participant_folder}/dwi/xmfs"
 
-dwiextract "${participant_folder}/dwi/eddy_corrected_data.mif" - -bzero | mrmath - mean "${participant_folder}/dwi/mean_b0.mif" -axis 3 -force
+dwiextract "${participant_folder}/dwi/eddy_corrected_data_unbiased.mif" - -bzero | mrmath - mean "${participant_folder}/dwi/mean_b0.mif" -axis 3 -force
 mrconvert "${participant_folder}/dwi/mean_b0.mif" "${participant_folder}/T1/reg_tmp/mean_b0.nii.gz" -force
 mrconvert "${participant_folder}/dwi/5tt_nocoreg.mif" "${participant_folder}/T1/reg_tmp/5tt_nocoreg.nii.gz" -force
 bbregister --s "${id}" --mov "${participant_folder}/T1/reg_tmp/mean_b0.nii.gz" --reg "${participant_folder}/dwi/xmfs/mean_b0_to_T1_bbreg.lta" --dti
@@ -218,6 +237,8 @@ mrconvert "${participant_folder}/T1/reg_tmp/5tt_coreg.nii.gz" "${participant_fol
 mkdir -p "${participant_folder}/dwi/dwi2response-tmp"
 mkdir -p "${participant_folder}/dwi/average_diffusion_response"
 
+
+echo "----> Generating diffusion response functions from each tissue type"
 mrconvert ${participant_folder}/dwi/eddy_corrected_data.mif ${participant_folder}/dwi/dwi2response-tmp/dwi.mif -strides 0,0,0,1 -force
 mrconvert ${participant_folder}/dwi/5tt_coreg.mif ${participant_folder}/dwi/dwi2response-tmp/5tt.mif -force
 dwi2mask ${participant_folder}/dwi/dwi2response-tmp/dwi.mif ${participant_folder}/dwi/dwi2response-tmp/mask.mif -force
@@ -233,12 +254,13 @@ amp2response ${participant_folder}/dwi/dwi2response-tmp/dwi.mif ${participant_fo
 amp2response ${participant_folder}/dwi/dwi2response-tmp/dwi.mif ${participant_folder}/dwi/dwi2response-tmp/wmh_sf_mask.mif ${participant_folder}/dwi/dwi2response-tmp/dars.mif ${participant_folder}/dwi/average_diffusion_response/wmh.txt -shells 5,999,1998 -force
 amp2response ${participant_folder}/dwi/dwi2response-tmp/dwi.mif ${participant_folder}/dwi/dwi2response-tmp/gm_mask.mif ${participant_folder}/dwi/dwi2response-tmp/dars.mif ${participant_folder}/dwi/average_diffusion_response/gm.txt -shells 5,999,1998 -isotropic -force
 amp2response ${participant_folder}/dwi/dwi2response-tmp/dwi.mif ${participant_folder}/dwi/dwi2response-tmp/csf_mask.mif ${participant_folder}/dwi/dwi2response-tmp/dars.mif ${participant_folder}/dwi/average_diffusion_response/csf.txt -shells 5,999,1998 -isotropic -force
+mv ${participant_folder}/dwi/dwi2response-tmp/wmh_mask.mif ${participant_folder}/dwi/wmh_mask.mif
 
 
 echo "Creating 20M streamlines and running ACT"
 tckgen -act "${participant_folder}/dwi/5tt_coreg.mif" -backtrack \
   -seed_gmwmi "${participant_folder}/dwi/gmwmSeed_coreg.mif" -nthreads 10 \
-  -maxlength 250 -cutoff 0.06 -select 20000000 \
+  -maxlength 250 -cutoff 0.06 -select 20000000 -info \
   "${participant_folder}/dwi/wmfod_norm.mif" "${participant_folder}/dwi/tracks_20M.tck" -force || { echo "tckgen failed for ${id}. Skipping."; exit 1; }
 tckedit "${participant_folder}/dwi/tracks_20M.tck" -number 200k "${participant_folder}/dwi/smallerTracks_200k.tck" -force || { echo "tckedit failed for ${id}. Skipping."; exit 1; }
 tcksift2 -act "${participant_folder}/dwi/5tt_coreg.mif" \
@@ -248,7 +270,9 @@ tcksift2 -act "${participant_folder}/dwi/5tt_coreg.mif" \
   "${participant_folder}/dwi/tracks_20M.tck" "${participant_folder}/dwi/wmfod_norm.mif" \
   "${participant_folder}/dwi/sift_2M.txt" -force || { echo "tcksift2 failed for ${id}. Skipping."; exit 1; }
 
-echo "****** Using mris_ca_label to generate individual parcellation using gcs files ********"
+echo -e "\e[31m## ## ## ## RUNNING STAGE 3 ON ${id} ## ## ## ##\e[0m"
+
+echo "-----> Using mris_ca_label to generate individual parcellation using gcs files"
 mris_ca_label \
   -l "${SUBJECTS_DIR}/${id}/label/lh.cortex.label" \
   "${id}" lh \
@@ -263,14 +287,14 @@ mris_ca_label \
   "${CBIG_CODE_DIR}/gcs_schaefer/rh.Schaefer2018_200Parcels_17Networks.gcs" \
   "${SUBJECTS_DIR}/${id}/label/rh.Schaefer2018_200Parcels_17Networks_order.annot"
 
-echo "****** Generate Schaefer2018 parcellation in volume space ********"
+echo "------> Generate Schaefer2018 parcellation in volume space"
 mri_aparc2aseg \
   --s "${id}" --old-ribbon \
   --o "${HCP_free}/Schaefer2018_200Parcels_17Networks_order_atlas.mgz" \
   --annot Schaefer2018_200Parcels_17Networks_order \
   --rip-unknown
 
-echo "****** Converting Schaefer2018 parcellation for MRtrix3 ********"
+echo "-------> Converting Schaefer2018 parcellation for MRtrix3"
 labelconvert \
   "${HCP_free}/Schaefer2018_200Parcels_17Networks_order_atlas.mgz" \
   "${CBIG_CODE_DIR}/stable_projects/brain_parcellation/Schaefer2018_LocalGlobal/Parcellations/project_to_individual/Schaefer2018_200Parcels_17Networks_order_LUT.txt" \
@@ -287,7 +311,7 @@ mrtransform \
   "${participant_folder}/dwi/${id}_parcels_coreg_yeo.mif" \
   -force
 
-echo "****** Building the streamline count connectome (inv node vol scaling) ********"
+echo "-----> Building the streamline count connectome (inv node vol scaling)"
 tck2connectome \
   -symmetric \
   -zero_diagonal \
@@ -299,7 +323,7 @@ tck2connectome \
   -out_assignment "${participant_folder}/dwi/assignments_${id}_coreg_parcels_yeo.csv" \
   -force
 
-echo "Generating connectivity matrix weighted by mean streamline length..."
+echo "-------> Generating connectivity matrix weighted by mean streamline length..."
 tck2connectome \
   "${participant_folder}/dwi/tracks_20M.tck" \
   "${participant_folder}/dwi/${id}_parcels_coreg_yeo.mif" \
@@ -310,9 +334,9 @@ tck2connectome \
   -tck_weights_in "${participant_folder}/dwi/sift_2M.txt" \
   -force
 
-echo "Generating connectivity matrix weighted by mean streamline FA..."
+echo "-------> Generating connectivity matrix weighted by mean streamline FA..."
 dwi2tensor \
-  "${participant_folder}/dwi/eddy_corrected_data.mif" \
+  "${participant_folder}/dwi/eddy_corrected_data_unbiased.mif" \
   "${participant_folder}/dwi/dt.mif" \
   -mask "${participant_folder}/dwi/mask.mif" \
   -force
@@ -324,7 +348,7 @@ tensor2metric \
 
 mrcalc "${participant_folder}/dwi/FA.mif" -finite \
   "${participant_folder}/dwi/FA.mif" \
-  0.0 -if "${participant_folder}/dwi/FA_clean.mif"
+  0.0 -if "${participant_folder}/dwi/FA_clean.mif" -force
 
 tcksample "${participant_folder}/dwi/tracks_20M.tck" \
   "${participant_folder}/dwi/FA_clean.mif" \
@@ -343,13 +367,13 @@ tck2connectome \
   -stat_edge mean \
   -force
 
-echo "****** Saving results ******"
+echo "-------> Saving results"
 
 # Create output directories for diffusion response files
 mkdir -p "${results}/det_trac_results/diff_response/wm"
 mkdir -p "${results}/det_trac_results/diff_response/gm"
 mkdir -p "${results}/det_trac_results/diff_response/csf"
-mkdir -p "${results}/det_trac_results/diff_response/wmh"
+mkdir -p "${results}/det_trac_results/diff_response/whm"
 mkdir -p "${results}/det_trac_results/weighted_by_FA_inhyper"
 mkdir -p "${results}/det_trac_results/weighted_by_FBC_inhyper"
 
@@ -373,16 +397,15 @@ cp "${participant_folder}/dwi/average_diffusion_response/csf.txt" \
    || echo "**error copying CSF response**"
 
 cp "${participant_folder}/dwi/average_diffusion_response/wmh.txt" \
-   "${results}/det_trac_results/diff_response/wmh/${id}_wmh_response.txt" \
+   "${results}/det_trac_results/diff_response/whm/${id}_wmh_response.txt" \
    || echo "**error copying WMH response**"
 
 # Clean up temporary files
 rm -rf "${participant_folder}/T1/reg_tmp"
 rm -rf "${participant_folder}/dwi/dwi2response-tmp"
 
-module load fsl
 
-echo "****** generating QC images ******"
+echo "-------->  generating QC images"
 mrconvert ${participant_folder}/dwi/${id}_parcels_coreg_yeo.mif ${participant_folder}/T1/reg_tmp/${id}_parcels_coreg_yeo.nii.gz
 fsleyes render -of ${results}/det_trac_results/atlasXmeanb0_reg_check/${id}_AtlasOverMeanb0.png -s ortho ${participant_folder}/T1/reg_tmp/mean_b0.nii.gz ${participant_folder}/T1/reg_tmp/${id}_parcels_coreg_yeo.nii.gz
 
@@ -395,3 +418,4 @@ echo "Processing complete for ${id}."
 echo "========================================"
 echo "Tractography Processing Ended at $(date)"
 echo "========================================"
+
