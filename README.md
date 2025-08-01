@@ -1,6 +1,6 @@
-\==================================================================
+\==============================
 HCP‑STYLE STRUCTURAL & TRACTOGRAPHY PIPELINE – README (v1.0)
-============================================================
+===============================
 
 This repository contains two Bash scripts that turn raw Human Connectome‑style MRI data into pre‑processed surfaces, masks, and whole‑brain tractograms ready for network analysis. Before running either script, **please read the dependency notes below—especially the HCP folder mapping requirement and the customised MRtrix3 build**.
 
@@ -11,7 +11,7 @@ This repository contains two Bash scripts that turn raw Human Connectome‑styl
 ---
 
 •  Johns\_HCP\_prefreesurfer        – Structural preprocessing wrapper around the HCP *PreFreeSurfer* pipeline.
-•  det\_trac.sh                    –  Anatomically‑constrained tractography pipeline built on MRtrix3.
+•  prob\_trac.sh                    –  Anatomically‑constrained tractography pipeline built on MRtrix3.
 
 ---
 
@@ -20,7 +20,7 @@ This repository contains two Bash scripts that turn raw Human Connectome‑styl
 ---
 
 Step 1  (structural):  Johns\_HCP\_prefreesurfer
-Step 2  (diffusion) :  det\_trac.sh  → tractograms + connectomes
+Step 2  (diffusion) :  prob\_trac.sh  → tractograms + connectomes
 
 Each script can be run separately via Slurm or locally; logs are written per subject.
 
@@ -68,7 +68,7 @@ If these are missing the job will abort with an error.
 
 ---
 
-`det_trac.sh` relies heavily on MRtrix3 and, by default, calls:
+`prob_trac.sh` relies heavily on MRtrix3 and, by default, calls:
 
 •  dwifslpreproc / dwibiascorrect
 •  5ttgen                              ← **customised**
@@ -78,14 +78,14 @@ If these are missing the job will abort with an error.
 For reproducibility and to avoid module pollution on multi‑user clusters, I recommend:
 
 ```
-Create a fresh environment and clone patched source
+Create a fresh environment and modify lib/mrtrix3/_5ttgen/hsvs.py, then copy to the directory as below
 ```
 
 Patch summary:
 
 ```
 * File modified: `lib/mrtrix3/_5ttgen/hsvs.py`
-* Behaviour: adds **white matter hyperintensities (WMH)** as **the 5th tissue type** in the output 5‑TT image so that downstream ACT uses true five‑tissue RFs (GM, CSF, WM, sub‑cortical, WMH); ordinary white matter remains tissue 3
+* Behaviour: adds **white matter hyperintensities (WMH)** as **the 5th tissue type** in the output 5‑TT image so that downstream ACT uses true five‑tissue RFs (GM, CSF, WM, sub‑cortical, WMH); ordinary white matter remains tissue 3. 
 * Implementation: edit `lib/mrtrix3/_5ttgen/hsvs.py` and modify the **ASEG_STRUCTURES** list:
 ```
 
@@ -147,9 +147,9 @@ sbatch det\_trac.sh&#x20;
 
 ---
 
-* **"Folder not found"** – check your QuNex mapping file; rerun `convert-dicom`.
-* **"5ttgen: Unknown tissue type 5"** – you are using stock MRtrix; rebuild from the patched fork.
+* **"Folder not found"** – check your QuNex mapping file; rerun `convert-dicom`. 
 * **GPU eddy fails** – confirm CUDA & driver versions or fall back to CPU by passing `--no‑gpu`.
+* **Unknown command** - The module load commands were designed for the oxford ood cluster. You will have to change for local enviroment.
 
 ---
 
