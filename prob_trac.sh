@@ -204,7 +204,7 @@ fi
 echo "$id,$percentageOutliers" >> "$csvFile"
 
 module load ANTs
-
+mrconvert "${participant_folder}/dwi/nodif_brain_mask.nii.gz" "${participant_folder}/dwi/mask.mif" -force
 mrconvert "${participant_folder}/dwi/data.nii.gz" "${participant_folder}/dwi/eddy_corrected_data.mif" -fslgrad "${participant_folder}/dwi/bvec" "${participant_folder}/dwi/bval" -force
 dwibiascorrect ants "${participant_folder}/dwi/eddy_corrected_data.mif" "${participant_folder}/dwi/eddy_corrected_data_unbiased.mif" -bias ${participant_folder}/dwi/bias.mif -force
 dwi2response dhollander "${participant_folder}/dwi/eddy_corrected_data_unbiased.mif" "${participant_folder}/dwi/wm.txt" "${participant_folder}/dwi/gm.txt" "${participant_folder}/dwi/csf.txt" -voxels "${participant_folder}/dwi/voxels.mif" -force
@@ -240,15 +240,14 @@ mkdir -p "${participant_folder}/dwi/average_diffusion_response"
 
 
 echo "----> Generating diffusion response functions from each tissue type"
-mrconvert ${participant_folder}/dwi/eddy_corrected_data.mif ${participant_folder}/dwi/dwi2response-tmp/dwi.mif -strides 0,0,0,1 -force
+mrconvert ${participant_folder}/dwi/eddy_corrected_data_unbiased.mif ${participant_folder}/dwi/dwi2response-tmp/dwi.mif -strides 0,0,0,1 -force
 mrconvert ${participant_folder}/dwi/5tt_coreg.mif ${participant_folder}/dwi/dwi2response-tmp/5tt.mif -force
-dwi2mask ${participant_folder}/dwi/dwi2response-tmp/dwi.mif ${participant_folder}/dwi/dwi2response-tmp/mask.mif -force
-dwi2tensor ${participant_folder}/dwi/dwi2response-tmp/dwi.mif - -mask ${participant_folder}/dwi/dwi2response-tmp/mask.mif | tensor2metric - -fa ${participant_folder}/dwi/dwi2response-tmp/fa.mif -vector ${participant_folder}/dwi/dwi2response-tmp/dars.mif -force
+dwi2tensor ${participant_folder}/dwi/dwi2response-tmp/dwi.mif - -mask "${participant_folder}/dwi/mask.mif" | tensor2metric - -fa ${participant_folder}/dwi/dwi2response-tmp/fa.mif -vector ${participant_folder}/dwi/dwi2response-tmp/dars.mif -force
 mrtransform ${participant_folder}/dwi/dwi2response-tmp/5tt.mif ${participant_folder}/dwi/dwi2response-tmp/5tt_regrid.mif -template ${participant_folder}/dwi/dwi2response-tmp/fa.mif -interp linear -force
-mrconvert ${participant_folder}/dwi/dwi2response-tmp/5tt_regrid.mif - -coord 3 2 -axes 0,1,2 | mrcalc - 0.95 -gt ${participant_folder}/dwi/dwi2response-tmp/mask.mif -mult ${participant_folder}/dwi/dwi2response-tmp/wm_mask.mif -force
-mrconvert ${participant_folder}/dwi/dwi2response-tmp/5tt_regrid.mif - -coord 3 0 -axes 0,1,2 | mrcalc - 0.95 -gt ${participant_folder}/dwi/dwi2response-tmp/fa.mif 0.2 -lt -mult ${participant_folder}/dwi/dwi2response-tmp/mask.mif -mult ${participant_folder}/dwi/dwi2response-tmp/gm_mask.mif -force
-mrconvert ${participant_folder}/dwi/dwi2response-tmp/5tt_regrid.mif - -coord 3 3 -axes 0,1,2 | mrcalc - 0.95 -gt ${participant_folder}/dwi/dwi2response-tmp/fa.mif 0.2 -lt -mult ${participant_folder}/dwi/dwi2response-tmp/mask.mif -mult ${participant_folder}/dwi/dwi2response-tmp/csf_mask.mif -force
-mrconvert ${participant_folder}/dwi/dwi2response-tmp/5tt_regrid.mif - -coord 3 4 -axes 0,1,2 | mrcalc - 0.95 -gt ${participant_folder}/dwi/dwi2response-tmp/mask.mif -mult ${participant_folder}/dwi/dwi2response-tmp/wmh_mask.mif -force 
+mrconvert ${participant_folder}/dwi/dwi2response-tmp/5tt_regrid.mif - -coord 3 2 -axes 0,1,2 | mrcalc - 0.95 -gt "${participant_folder}/dwi/mask.mif" -mult ${participant_folder}/dwi/dwi2response-tmp/wm_mask.mif -force
+mrconvert ${participant_folder}/dwi/dwi2response-tmp/5tt_regrid.mif - -coord 3 0 -axes 0,1,2 | mrcalc - 0.95 -gt ${participant_folder}/dwi/dwi2response-tmp/fa.mif 0.2 -lt -mult ${participant_folder}/dwi/mask.mif -mult ${participant_folder}/dwi/dwi2response-tmp/gm_mask.mif -force
+mrconvert ${participant_folder}/dwi/dwi2response-tmp/5tt_regrid.mif - -coord 3 3 -axes 0,1,2 | mrcalc - 0.95 -gt ${participant_folder}/dwi/dwi2response-tmp/fa.mif 0.2 -lt -mult ${participant_folder}/dwi/mask.mif -mult ${participant_folder}/dwi/dwi2response-tmp/csf_mask.mif -force
+mrconvert ${participant_folder}/dwi/dwi2response-tmp/5tt_regrid.mif - -coord 3 4 -axes 0,1,2 | mrcalc - 0.95 -gt "${participant_folder}/dwi/mask.mif" -mult ${participant_folder}/dwi/dwi2response-tmp/wmh_mask.mif -force 
 dwi2response tournier ${participant_folder}/dwi/dwi2response-tmp/dwi.mif ${participant_folder}/dwi/dwi2response-tmp/wm_ss_response.txt -mask ${participant_folder}/dwi/dwi2response-tmp/wm_mask.mif -voxels ${participant_folder}/dwi/dwi2response-tmp/wm_sf_mask.mif -force
 dwi2response tournier ${participant_folder}/dwi/dwi2response-tmp/dwi.mif ${participant_folder}/dwi/dwi2response-tmp/wmh_ss_response.txt -mask ${participant_folder}/dwi/dwi2response-tmp/wmh_mask.mif -voxels ${participant_folder}/dwi/dwi2response-tmp/wmh_sf_mask.mif -force
 amp2response ${participant_folder}/dwi/dwi2response-tmp/dwi.mif ${participant_folder}/dwi/dwi2response-tmp/wm_sf_mask.mif ${participant_folder}/dwi/dwi2response-tmp/dars.mif ${participant_folder}/dwi/average_diffusion_response/wm.txt -shells 5,999,1998 -force
@@ -374,7 +373,7 @@ echo "-------> Saving results"
 mkdir -p "${results}/det_trac_results/diff_response/wm"
 mkdir -p "${results}/det_trac_results/diff_response/gm"
 mkdir -p "${results}/det_trac_results/diff_response/csf"
-mkdir -p "${results}/det_trac_results/diff_response/whm"
+mkdir -p "${results}/det_trac_results/diff_response/wmh"
 mkdir -p "${results}/det_trac_results/weighted_by_FA_inhyper"
 mkdir -p "${results}/det_trac_results/weighted_by_FBC_inhyper"
 
@@ -398,12 +397,8 @@ cp "${participant_folder}/dwi/average_diffusion_response/csf.txt" \
    || echo "**error copying CSF response**"
 
 cp "${participant_folder}/dwi/average_diffusion_response/wmh.txt" \
-   "${results}/det_trac_results/diff_response/whm/${id}_wmh_response.txt" \
+   "${results}/det_trac_results/diff_response/wmh/${id}_wmh_response.txt" \
    || echo "**error copying WMH response**"
-
-# Clean up temporary files
-rm -rf "${participant_folder}/T1/reg_tmp"
-rm -rf "${participant_folder}/dwi/dwi2response-tmp"
 
 
 echo "-------->  generating QC images"
@@ -419,4 +414,3 @@ echo "Processing complete for ${id}."
 echo "========================================"
 echo "Tractography Processing Ended at $(date)"
 echo "========================================"
-
