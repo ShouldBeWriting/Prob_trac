@@ -86,7 +86,6 @@ excludedCsvFile="${log_dir}/excluded_subjects_outlier.csv"
 module load Miniconda3
 module load fsl
 module load freesurfer
-module load ANTs
 export QT_XCB_GL_INTEGRATION=""
 source /cvmfs/software.fmrib.ox.ac.uk/eb/el9/software/Miniconda3/24.1.2-0/etc/profile.d/conda.sh
 conda activate mrtrix3_env
@@ -203,6 +202,8 @@ fi
 
 
 echo "$id,$percentageOutliers" >> "$csvFile"
+
+module load ANTs
 
 mrconvert "${participant_folder}/dwi/data.nii.gz" "${participant_folder}/dwi/eddy_corrected_data.mif" -fslgrad "${participant_folder}/dwi/bvec" "${participant_folder}/dwi/bval" -force
 dwibiascorrect ants "${participant_folder}/dwi/eddy_corrected_data.mif" "${participant_folder}/dwi/eddy_corrected_data_unbiased.mif" -bias ${participant_folder}/dwi/bias.mif -force
